@@ -1,0 +1,174 @@
+Device-Mapper's "inplace-compress" target provides inplace compression of block
+devices using the kernel compression API.
+
+Parameters: <device>=<device path> | <device>:<device path>
+	[, <#opt_params writethough>, ]
+	[, <#opt_params <writeback>=<meta_commit_delay> ]
+	[, <#opt_params <writeback>:<meta_commit_delay> ]
+	[, <#opt_params compressor>=<type> ]
+	[, <#opt_params compressor>:<type> ]
+	[, <#opt_params critical>  ]
+
+
+<writethrough>
+    Write data and metadata together.
+
+<writeback>=<meta_commit_delay>
+    Write metadata every 'meta_commit_delay' interval.
+
+<device>=<device path>
+    This  is  the  device  that  is going to be used as backend and contains the
+    compressed data.  You can  specify  it  as  a path like /dev/xxx or a device
+    number <major>:<minor>.
+
+<compressor>=<type>
+    Choose  the  compressor algorithm. 'lzo' and '842' compressors are supported.
+
+<critical>
+    Block device used in critical path.
+
+Example scripts
+===============
+
+create a inplace-compress block device using lzo compression. Write metadata
+and data together.
+
+[[
+#!/bin/sh
+# Create a inplace-compress device using dmsetup
+device=$1  #your backing storage eg: /dev/sdc1
+size=80000 #size of your new compressed block device
+dmsetup create comp1 --table "0 $size inplacecompress device=$device,
+		writethrough, compressor=lzo"
+]]
+
+
+create a inplace-compress block device using nx-842 hardware compression. Write
+metadata periodially every 5sec.
+
+[[
+#!/bin/sh
+# Create a inplace-compress device using dmsetup
+device=$1  #your backing storage eg: /dev/sdc1
+size=80000 #size of your new compressed block device
+dmsetup create comp1 --table "0 $size inplacecompress device=$device,
+		writeback=5, compressor=842"
+]]
+
+
+Create a inplace-compress block device. Device is used in critical path; ex:
+swap device.
+
+[[
+#!/bin/sh
+# Create a inplace-compress device using dmsetup
+device=$1  #your backing storage eg: /dev/sdc1
+size=80000 #size of your new compressed block device
+dmsetup create comp1 --table "0 $size inplacecompress device=$device,critical"
+]]
+
+Description
+===========
+
+    This is a  simple DM target supporting inplace compression. Its best suited
+    for SSD. The underlying disk must support 512B sector size, the target only
+    supports 4k sector size.
+
+
+
+    Disk layout:
+    |super|...meta...|..data...|
+
+    Store unit is 4k (a block). Superblock is 1 block. It stores meta and data
+    size and compression algorithm. Metablock is a bitmap. For each data block,
+    there are 5 bits meta.
+
+
+
+    Data:
+
+    Data of a block is  compressed.  Compressed data is round up to 512B, which
+    is  the  payload.   On disk,  payload is stored at the beginning of logical
+    sector of the  block. Let's look  at an example. Say we store data to block
+    A, which is  in sector  B(A*8),  its orginal size is 4k, compressed size is
+    1500. Compressed data (CD) will use three sectors (512B). The three sectors
+    are the payload. Payload will be stored at sector B.
+
+    ---------------------------------------------------
+    ... | CD1 | CD2 | CD3 |   |   |   |   |    | ...
+    ---------------------------------------------------
+        ^B    ^B+1  ^B+2                  ^B+7 ^B+8
+
+    For  this block, we will not use sector B+3 to B+7 (a hole). We use 4 meta
+    bits to  present payload size. The compressed size (1500) is not stored in
+    meta directly. Instead, we store it at the last 64bits of payload. In this
+    example,  we  store  it  at  the  end  of sector B+2. If compressed size +
+    sizeof(64bits) crosses a sector, payload size will increase one sector. If
+    payload uses 8 sectors, we store  uncompressed data directly. A compressed
+    size is 32bits and it  is tagged  with a 32bit magic number, to ensure its
+    integrity.
+
+    If IO size  is  bigger than one block, we can store the data as an extent.
+    Data  of the whole extent is compressed and stored in the similar way like
+    above.  The first block of the extent is the head, all others are the tail.
+    If extent  is  one  block,  the  block is head. We have one bit of meta to
+    indicate if a block is head or tail. If four meta bits of head block can't
+    store extent payload size, we  will  borrow  tail block meta bits to store
+    payload size.  Max allowd extent size is 128k.  This  is  to gaurd against
+    compression/decompression of data that is too large.
+
+    Meta:
+
+    Modifying data modifies meta aswell. Metadata is  written(flush)  to  disk
+    depending  on metadata write policy. We support writeback and writethrough
+    mode. In writeback mode, meta will be written to disk periodically or when
+    a FLUSH  request  is  initiated.  In writethrough mode, data and meta data
+    will be written to disk together.
+
+    Advantages:
+
+    1. Simple. Since   we   store   compressed   data in-place, we don't  need
+    complicated disk data management.
+
+    2. Efficient. For each 4k, we only need 5 bits meta. 1T data will use less
+    than 200M  meta, so  we  can load all meta into memory. Actual compression
+    size is in payload. This  saves  a  metadata write if the IO does not need
+    RMW.
+
+
+
+    Disadvantages:
+
+    1. Hole. Since we store compressed data in-place, there are a lot of holes
+    (in above example, B+3 - B+7) hole can  impact IO,  because we can't merge
+    the  IO.
+
+    2. 1:1 size. Compression does not  change disk size. If disk is 1T, we can
+    only  store  1T  data  even  we  do  compression.
+
+    The  above  disadvantages  can  be mitigated by using SSDs or NVMe devices.
+    Generally  these  device  firmware have a FTL layer to map disk sectors to
+    flash  nand. Some   high   device   firmware   have   filesystem-like  FTL.
+
+    1. Hole. Disk  has  a  lot  of  holes, but SSD FTL  can  still  store data
+    continuous in nand. Even if we can't do IO merge in OS layer, SSD firmware
+    can do it.
+
+    2. 1:1 size. We write  compressed  data  to  SSD, which means less data is
+    written to SSD. This  will  be  very   helpful  to   improve  SSD  garbage
+    collection, write  speed  and increase its life span.  Advanced device FTL
+    can easily do thin  provision. For example, if nand  is  1T and we let the
+    device report it as 2T, and  use  the  SSD  as  compressed target. In such
+    cases, we alleviate the issue.
+
+
+
+
+    This target  need  not neccessarily  be backed by FTL supporting device in
+    order to be functional. However  having  such  a device can  help maximize
+    the benefits.
+
+
+Author:
+	Shaohua Li <shli@fusionio.com>
+	Ram Pai <linuxram@us.ibm.com>

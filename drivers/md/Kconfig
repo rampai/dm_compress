@@ -508,4 +508,10 @@ config DM_LOG_WRITES
 
 	  If unsure, say N.
 
+config DM_INPLACE_COMPRESS
+	tristate "Inplace Compression target"
+	depends on BLK_DEV_DM
+	---help---
+	  Allow volume managers to compress data for SSD.
+
 endif # MD

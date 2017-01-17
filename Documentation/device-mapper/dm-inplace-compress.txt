@@ -1,0 +1,155 @@
+Device-Mapper's "inplace-compress" target provides inplace compression of block
+devices using the kernel compression API.
+
+Parameters: <device path> \
+	[ <#opt_params writethough> ]
+	[ <#opt_params <writeback> <meta_commit_delay> ]
+	[ <#opt_params compressor> <type> ]
+	[ <#opt_params critical>  ]
+
+
+<writethrough>
+    Write data and metadata together.
+
+<writeback> <meta_commit_delay>
+    Write metadata every 'meta_commit_delay' interval.
+
+<device path>
+    This is the device that is going to be used as backend and contains the
+    compressed data.  You can specify it as a path like /dev/xxx or a device
+    number <major>:<minor>.
+
+<compressor> <type>
+    Choose the compressor algorithm. 'lzo' and '842'
+    compressors are supported.
+
+<critical>
+    Block device used in critical path.
+
+Example scripts
+===============
+
+create a inplace-compress block device using lzo compression. Write metadata
+and data together.
+[[
+#!/bin/sh
+# Create a inplace-compress device using dmsetup
+device=$1  #your backing storage eg: /dev/sdc1
+size=80000 #size of your new compressed block device
+dmsetup create comp1 --table "0 $size inplacecompress $device
+		writethrough compressor lzo"
+]]
+
+
+create a inplace-compress block device using nx-842 hardware compression. Write
+metadata periodially every 5sec.
+
+[[
+#!/bin/sh
+# Create a inplace-compress device using dmsetup
+device=$1  #your backing storage eg: /dev/sdc1
+size=80000 #size of your new compressed block device
+dmsetup create comp1 --table "0 $size inplacecompress $device
+		writeback 5 compressor 842"
+]]
+
+
+Create a inplace-compress block device. Device is used in critical path;
+ex: swap device.
+
+[[
+#!/bin/sh
+# Create a inplace-compress device using dmsetup
+device=$1  #your backing storage eg: /dev/sdc1
+size=80000 #size of your new compressed block device
+dmsetup create comp1 --table "0 $size inplacecompress $device critical"
+]]
+
+Description
+===========
+    This is a simple DM target supporting inplace compression. Its best suited for
+    SSD. The underlying disk must support 512B sector size, the target only
+    supports 4k sector size.
+
+    Disk layout:
+    |super|...meta...|..data...|
+
+    Store unit is 4k (a block). Super is 1 block, which stores meta and data
+    size and compression algorithm. Meta is a bitmap. For each data block,
+    there are 5 bits meta.
+
+    Data:
+
+    Data of a block is compressed. Compressed data is round up to 512B, which
+    is the payload. In disk, payload is stored at the beginning of logical
+    sector of the block. Let's look at an example. Say we store data to block
+    A, which is in sector B(A*8), its orginal size is 4k, compressed size is
+    1500. Compressed data (CD) will use 3 sectors (512B). The 3 sectors are the
+    payload. Payload will be stored at sector B.
+
+    ---------------------------------------------------
+    ... | CD1 | CD2 | CD3 |   |   |   |   |    | ...
+    ---------------------------------------------------
+        ^B    ^B+1  ^B+2                  ^B+7 ^B+8
+
+    For this block, we will not use sector B+3 to B+7 (a hole). We use 4 meta
+    bits to present payload size. The compressed size (1500) isn't stored in
+    meta directly. Instead, we store it at the last 32bits of payload. In this
+    example, we store it at the end of sector B+2. If compressed size +
+    sizeof(32bits) crosses a sector, payload size will increase one sector. If
+    payload uses 8 sectors, we store uncompressed data directly.
+
+    If IO size is bigger than one block, we can store the data as an extent.
+    Data of the whole extent will compressed and stored in the similar way like
+    above.  The first block of the extent is the head, all others are the tail.
+    If extent is 1 block, the block is head. We have 1 bit of meta to present
+    if a block is head or tail. If 4 meta bits of head block can't store extent
+    payload size, we will borrow tail block meta bits to store payload size.
+    Max allowd extent size is 128k, so we don't compress/decompress too big
+    size data.
+
+    Meta:
+    Modifying data will modify meta too. Meta will be written(flush) to disk
+    depending on meta write policy. We support writeback and writethrough mode.
+    In writeback mode, meta will be written to disk in an interval or a FLUSH
+    request.  In writethrough mode, data and meta data will be written to disk
+    together.
+
+    Advantages:
+
+    1. Simple. Since we store compressed data in-place, we don't need complicated
+    disk data management.
+    2. Efficient. For each 4k, we only need 5 bits meta. 1T data will use less than
+    200M meta, so we can load all meta into memory. And actual compression size is
+    in payload. So if IO doesn't need RMW and we use writeback meta flush, we don't
+    need extra IO for meta.
+
+    Disadvantages:
+
+    1. hole. Since we store compressed data in-place, there are a lot of holes
+    (in above example, B+3 - B+7) Hole can impact IO, because we can't do IO
+    merge.
+
+    2. 1:1 size. Compression doesn't change disk size. If disk is 1T, we can
+    only store 1T data even we do compression.
+
+    But this is for SSD only. Generally SSD firmware has a FTL layer to map
+    disk sectors to flash nand. High end SSD firmware has filesystem-like FTL.
+
+    1. hole. Disk has a lot of holes, but SSD FTL can still store data continuous
+    in nand. Even if we can't do IO merge in OS layer, SSD firmware can do it.
+
+    2. 1:1 size. On one side, we write compressed data to SSD, which means less
+    data is written to SSD. This will be very helpful to improve SSD garbage
+    collection, and so write speed and life cycle. So even this is a problem, the
+    target is still helpful. On the other side, advanced SSD FTL can easily do thin
+    provision. For example, if nand is 1T and we let SSD report it as 2T, and use
+    the SSD as compressed target. In such SSD, we don't have the 1:1 size issue.
+
+    So even if SSD FTL cannot map non-continuous disk sectors to continuous nand,
+    the compression target can still function well.
+
+
+Author:
+	Shaohua Li <shli@fusionio.com>
+	Ram Pai <linuxram@us.ibm.com>

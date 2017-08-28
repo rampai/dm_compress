@@ -13,6 +13,7 @@
 #include <linux/dm-io.h>
 #include <linux/crypto.h>
 #include <linux/lzo.h>
+#include <linux/lz4.h>
 #include <linux/kthread.h>
 #include <linux/page-flags.h>
 #include <linux/completion.h>
@@ -53,6 +54,12 @@ static struct workqueue_struct *dm_icomp_wq;
  *****************************************************
  */
 static struct dm_icomp_compressor_data compressors[] = {
+	[DMICP_COMP_ALG_LZ4] = {
+		.name = "lz4",
+		.can_handle_overflow = true,
+		.comp_len = lz4_comp_len,
+		.max_comp_len = lz4_max_comp_len,
+	},
 	[DMICP_COMP_ALG_LZO] = {
 		.name = "lzo",
 		.can_handle_overflow = false,
@@ -1318,7 +1325,7 @@ static void *get_addr(struct bio *bio,  int len, u64 bio_off, u64 *offset)
 	struct bvec_iter iter;
 
 	bio_for_each_segment(bv, bio, iter) {
-	
+
 		if (bio_off <= bv.bv_len) {
 			if ((bio_off + len) > bv.bv_len)
 				break;

@@ -11,6 +11,7 @@ struct dm_icomp_super_block {
 	u8 comp_alg;
 } __packed;
 
+#define DMICP_COMP_ALG_LZ4 2
 #define DMICP_COMP_ALG_LZO 1
 #define DMICP_COMP_ALG_842 0
 
@@ -177,6 +178,16 @@ static inline int lzo_comp_len(int len)
 static inline int lzo_max_comp_len(int len)
 {
 	return lzo1x_worst_compress(len);
+}
+
+static inline int lz4_comp_len(int len)
+{
+	return LZ4_COMPRESSBOUND(len) >> 1;
+}
+
+static inline int lz4_max_comp_len(int len)
+{
+	return LZ4_COMPRESSBOUND(len);
 }
 
 static inline int nx842_comp_len(int len)

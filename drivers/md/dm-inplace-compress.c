@@ -56,7 +56,7 @@ static struct workqueue_struct *dm_icomp_wq;
 static struct dm_icomp_compressor_data compressors[] = {
 	[DMICP_COMP_ALG_LZ4] = {
 		.name = "lz4",
-		.can_handle_overflow = true,
+		.can_handle_overflow = false,
 		.comp_len = lz4_comp_len,
 		.max_comp_len = lz4_max_comp_len,
 	},

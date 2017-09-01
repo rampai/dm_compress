@@ -182,7 +182,8 @@ static inline int lzo_max_comp_len(int len)
 
 static inline int lz4_comp_len(int len)
 {
-	return LZ4_COMPRESSBOUND(len) >> 1;
+	/* return LZ4_COMPRESSBOUND(len) >> 1; */
+	return LZ4_COMPRESSBOUND(len);
 }
 
 static inline int lz4_max_comp_len(int len)
